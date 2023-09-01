@@ -1,0 +1,56 @@
+Bootstrap: docker
+From: ubuntu:22.04
+# Adapted from https://github.com/opensim-org/opensim-core/blob/main/scripts/build/opensim-core-linux-build-script.sh
+
+%arguments
+	DEBUG_TYPE=Release
+	NUM_JOBS=4
+	MOCO=on
+	CORE_BRANCH=main
+	GENERATOR=Unix Makefiles
+
+%post
+        apt update -y
+        DEBIAN_FRONTEND=noninteractive apt install -y build-essential cmake autotools-dev autoconf pkg-config automake libopenblas-dev \
+	  liblapack-dev freeglut3-dev libxi-dev libxmu-dev doxygen python3 python3-dev python3-numpy python3-setuptools git byacc \
+	  libssl-dev libpcre3 libpcre3-dev libpcre2-dev libtool gfortran ninja-build patchelf openjdk-8-jdk wget
+	mkdir /opensim-workspace
+	echo "LOG: INSTALLING SWIG 4.1.1..."
+	mkdir -p /opensim-workspace/swig-source
+	cd /opensim-workspace/swig-source
+	wget -nc -q --show-progress https://github.com/swig/swig/archive/refs/tags/v4.1.1.tar.gz
+	tar xzf v4.1.1.tar.gz 
+	cd swig-4.1.1
+	sh autogen.sh 
+	./configure --prefix=/swig --disable-ccache
+	make
+	make install 
+	echo "LOG: CLONING OPENSIM-CORE..."
+	git clone https://github.com/opensim-org/opensim-core.git /opensim-workspace/opensim-core-source
+	cd /opensim-workspace/opensim-core-source
+	git checkout {{ CORE_BRANCH }}
+	echo "LOG: BUILDING OPENSIM-CORE DEPENDENCIES..."
+	mkdir -p /opensim-workspace/opensim-core-dependencies-build
+	cd /opensim-workspace/opensim-core-dependencies-build
+	cmake /opensim-workspace/opensim-core-source/dependencies -DCMAKE_INSTALL_PREFIX=/opensim-workspace/opensim-core-dependencies-install/ -DSUPERBUILD_ezc3d=on -DOPENSIM_WITH_CASADI={{ MOCO }} -DOPENSIM_WITH_TROPTER={{ MOCO }}
+	cmake . -LAH
+	cmake --build . --config Release -j{{ NUM_JOBS }}
+	echo "LOG: BUILDING OPENSIM-CORE..."
+	mkdir -p /opensim-workspace/opensim-core-build
+	cd /opensim-workspace/opensim-core-build
+	cmake /opensim-workspace/opensim-core-source -G{{ GENERATOR }} -DOPENSIM_DEPENDENCIES_DIR=/opensim-workspace/opensim-core-dependencies-install/ -DBUILD_JAVA_WRAPPING=on\
+	   -DBUILD_PYTHON_WRAPPING=on -DOPENSIM_C3D_PARSER=ezc3d -DBUILD_TESTING=off -DCMAKE_INSTALL_PREFIX=/opensim-core -DOPENSIM_INSTALL_UNIX_FHS=off -DSWIG_DIR=/swig/share/swig \
+	-DSWIG_EXECUTABLE=/swig/bin/swig
+	cmake . -LAH
+	cmake --build . --config {{ DEBUG_TYPE }} -j{{ NUM_JOBS }}
+	echo "LOG: TESTING OPENSIM-CORE..."
+	cd /opensim-workspace/opensim-core-build
+	# TODO: Temporary for python to find Simbody libraries.
+	export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/opensim-workspace/opensim-core-dependencies-install/simbody/lib
+	ctest --parallel {{ NUM_JOBS }} --output-on-failure	
+ 	echo "LOG: INSTALL OPENSIM-CORE..."
+	cd /opensim-workspace/opensim-core-build
+	cmake --install .
+
+%environment
+	export PATH=/opensim-core/bin:$PATH
